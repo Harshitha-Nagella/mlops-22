@@ -72,3 +72,6 @@ print(
     f"Classification report for classifier {clf}:\n"
     f"{metrics.classification_report(y_test, predicted)}\n"
 )
+
+#checking all the classifier not completely biased to predicting all samples in to one class".
+assert len(set(predicted)) != 1
