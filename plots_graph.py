@@ -1,80 +1,55 @@
+print(__doc__)
+
 # Author: Gael Varoquaux <gael dot varoquaux at normalesup dot org>
 # License: BSD 3 clause
 
+import sys
+import pandas as pd
+from statistics import mean,pstdev
+from utils import flatten_images, preprocess, create_splits, train_and_save_model, get_best_model_path, model_test, print_data_frame, print_metrics
 
-# PART: library dependencies -- sklear, torch, tensorflow, numpy, transformers
+#Get values from command line
+rescale_factor = 1
+gamma_values = [0.01, 0.005, 0.001, 0.0005]
+c_values = [0.1, 0.2, 0.5, 0.7]
+hyp_comb = [{'gamma':g,"C":c}for g in gamma_values for c in c_values]
+depth_value = [5,10,20,50,100]
+test_size = [0.2,0.25,0.3,0.35,0.4]
+validation_size_from_test_size = [0.5,0.6,0.4,0.7,0.75]
+flattened_images, digits = flatten_images()
+rescaled_images = preprocess(flattened_images, rescale_factor = rescale_factor)
+svm_test_dataset_acc, decision_tree_test_dataset_acc, svm_test_dataset_f1, decision_tree_test_dataset_f1  = [], [], [], []
+for i in range(5):
+    print("Train set size:" ,1-(test_size[i]))
+    print("Test set size :{0:.2f}".format(test_size[i]*(1 - validation_size_from_test_size[i])))
+    print("validation set size : {0:.2f}".format(validation_size_from_test_size[i]*test_size[i]))
 
-# Import datasets, classifiers and performance metrics
-from sklearn import datasets, svm, metrics,tree
-import pdb
+    X_train, X_test, X_validation, y_train, y_test, y_validation = create_splits(rescaled_images, digits.target, test_size[i], validation_size_from_test_size[i]) # 5 different splits
+    classifiers = {'SVM' : hyp_comb, 'DecisionTree' : depth_value} # two different classifiers
+    for clf_name in classifiers:
+        df = train_and_save_model(clf_name, classifiers[clf_name], X_train, y_train, X_validation, y_validation) # training and saving the model
+        model_path = get_best_model_path(df)  #path for the best model
+        print_data_frame(clf_name, df)
+        accuracy_test, f1_score_test = model_test(model_path, X_test, y_test) # metrics 
+        if clf_name == 'SVM':
+            svm_test_dataset_acc.append(accuracy_test)
+            svm_test_dataset_f1.append(f1_score_test)
+        else:
+            decision_tree_test_dataset_acc.append(accuracy_test)
+            decision_tree_test_dataset_f1.append(f1_score_test)
 
-from utils import (
-    preprocess_digits,
-    train_dev_test_split,
-    h_param_tuning,
-    data_viz,
-    pred_image_viz,
-    get_all_h_param_comb_svm,
-    get_all_h_param_comb_dec,
-    tune_and_save,
-)
-from joblib import dump, load
+        print_metrics(accuracy_test, f1_score_test)
 
-train_frac, dev_frac, test_frac = 0.8, 0.1, 0.1
-assert train_frac + dev_frac + test_frac == 1.0
+svm_test_dataset_acc.append(mean(svm_test_dataset_acc))
+decision_tree_test_dataset_acc.append(mean(decision_tree_test_dataset_acc))
+svm_test_dataset_f1.append(mean(svm_test_dataset_f1))
+decision_tree_test_dataset_f1.append(mean(decision_tree_test_dataset_f1))
+svm_test_dataset_acc.append(pstdev(svm_test_dataset_acc[:-1]))
+decision_tree_test_dataset_acc.append(pstdev(decision_tree_test_dataset_acc[:-1]))
+svm_test_dataset_f1.append(pstdev(svm_test_dataset_f1[:-1]))
+decision_tree_test_dataset_f1.append(pstdev(decision_tree_test_dataset_f1[:-1]))
 
-# 1. set the ranges of hyper parameters
-gamma_list = [0.01, 0.005, 0.001, 0.0005, 0.0001]
-c_list = [0.1, 0.2, 0.5, 0.7, 1, 2, 5, 7, 10]
-max_depth_list =[10,20,50,100]
-params = {}
-params["gamma"] = gamma_list
-params["C"] = c_list
-svm_h_param_comb = get_all_h_param_comb_svm(params)
-dec_params ={}
-dec_params["max_depth"] = max_depth_list
-dec_h_params_comb =  get_all_h_param_comb_dec(dec_params)
-h_param_comb = {"svm":svm_h_param_comb, "decision_tree": dec_h_params_comb}
+df = pd.DataFrame(list(zip(svm_test_dataset_acc, decision_tree_test_dataset_acc, svm_test_dataset_f1, decision_tree_test_dataset_f1)),columns =['SVM Accuracy', 'Decision Tree Accuracy', 'SVM f1 Score', 'Decision Tree f1 Score'], index =['1', '2', '3', '4', '5','Mean','Std'])
+df.index.name = 'Run'
 
-
-# PART: load dataset -- data from csv, tsv, jsonl, pickle
-digits = datasets.load_digits()
-data_viz(digits)
-data, label = preprocess_digits(digits)
-# housekeeping
-del digits
-    # define the evaluation metric
-metric = metrics.accuracy_score
-n_cv =5
-results = {}
-for n in range(n_cv):
-    x_train, y_train, x_dev, y_dev, x_test, y_test = train_dev_test_split(
-        data, label, train_frac, dev_frac
-    )
-
-    # PART: Define the model
-    # Create a classifier: a support vector classifier
-    models_of_choice = { "svm": svm.SVC(), "decision_tree" : tree.DecisionTreeClassifier(),}
-    for clf_name in models_of_choice:
-         clf = models_of_choice[clf_name]
-         actual_model_path = tune_and_save(clf, x_train, y_train, x_dev, y_dev, metric, h_param_comb[clf_name], model_path=None
-    )
-
-    # 2. load the best_model
-    best_model = load(actual_model_path)
-
-    # PART: Get test set predictions
-    # Predict the value of the digit on the test subset
-    predicted = best_model.predict(x_test)
-    if not clf_name  in results:
-        results[clf_name] =[]
-
-    results[clf_name].append(metric(y_pred = predicted,y_true = y_test))
-
-    # 4. report the test set accurancy with that best model.
-    # PART: Compute evaluation metrics
-    print(
-        f"Classification report for classifier {clf}:\n"
-        f"{metrics.classification_report(y_test, predicted)}\n"
-    )
-print(results)
+print(df)

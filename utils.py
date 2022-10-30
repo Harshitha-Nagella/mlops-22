@@ -1,121 +1,120 @@
-import matplotlib.pyplot as plt
+import pickle, os
+
+import pandas as pd
+from skimage.transform import rescale
+from sklearn import datasets
+from sklearn.metrics import accuracy_score
+from sklearn.metrics import f1_score
 from sklearn.model_selection import train_test_split
-from joblib import dump
 from sklearn import svm
 from sklearn import tree
 
+#flattening the images
+def flatten_images():
 
-def get_all_h_param_comb_svm(params):
-    h_param_comb_svm = [{"gamma": g, "C": c} for g in params['gamma'] for c in params['C']]
-    return h_param_comb_svm
-def get_all_h_param_comb_dec(params):
-    h_param_comb_dec = [{"max_depth": m} for m in params['max_depth'] ]
-    return h_param_comb_dec
-def preprocess_digits(dataset):
-    n_samples = len(dataset.images)
-    #print(dataset.shape)
-    data = dataset.images.reshape((n_samples, -1))
-    #print(data.shape)
-    label = dataset.target
-    return data, label
+    digits = datasets.load_digits()
+    n_samples = len(digits.images)
+    data = digits.images.reshape((n_samples, -1))
 
-# other types of preprocessing
-# - image : 8x8 : resize 16x16, 32x32, 4x4 : flatteing
-# - normalize data: mean normalization: [x - mean(X)]
-#                 - min-max normalization
-# - smoothing the image: blur on the image
+    return data, digits
+
+#rescaling happening here
+def preprocess(images, rescale_factor):
+
+    resized_images = []
+    for d in images:
+        resized_images.append(rescale(d, rescale_factor, anti_aliasing = False))
+    return resized_images
 
 
-def data_viz(dataset):
-    # PART: sanity check visualization of the data
-    _, axes = plt.subplots(nrows=1, ncols=4, figsize=(10, 3))
-    for ax, image, label in zip(axes, dataset.images, dataset.target):
-        ax.set_axis_off()
-        ax.imshow(image, cmap=plt.cm.gray_r, interpolation="nearest")
-        ax.set_title("Training: %i" % label)
+def create_splits(data, target, test_size, validation_size_from_test_size):
 
+    # splits the data accordingly as values passing from the main
+    X_train, X_test, y_train, y_test = train_test_split(
+        data, target, test_size=test_size, shuffle=False)
 
-# PART: Sanity check of predictions
-def pred_image_viz(x_test, predictions):
-    _, axes = plt.subplots(nrows=1, ncols=4, figsize=(10, 3))
-    for ax, image, prediction in zip(axes, x_test, predictions):
-        ax.set_axis_off()
-        image = image.reshape(8, 8)
-        ax.imshow(image, cmap=plt.cm.gray_r, interpolation="nearest")
-        ax.set_title(f"Prediction: {prediction}")
-
-# PART: define train/dev/test splits of experiment protocol
-# train to train model
-# dev to set hyperparameters of the model
-# test to evaluate the performance of the model
-
-def train_dev_test_split(data, label, train_frac, dev_frac):
-
-    dev_test_frac = 1 - train_frac
-    x_train, x_dev_test, y_train, y_dev_test = train_test_split(
-        data, label, test_size=dev_test_frac, shuffle=True
-    )
-    x_test, x_dev, y_test, y_dev = train_test_split(
-        x_dev_test, y_dev_test, test_size=(dev_frac) / dev_test_frac, shuffle=True
-    )
-
-    return x_train, y_train, x_dev, y_dev, x_test, y_test
-
-
-def h_param_tuning(h_param_comb, clf, x_train, y_train, x_dev, y_dev, metric):
-    best_metric = -1.0
-    best_model = None
-    best_h_params = None
-    # 2. For every combination-of-hyper-parameter values
-    for cur_h_params in h_param_comb:
-
-        # PART: setting up hyperparameter
-        hyper_params = cur_h_params
-        clf.set_params(**hyper_params)
-
-        # PART: Train model
-        # 2.a train the model
-        # Learn the digits on the train subset
-        clf.fit(x_train, y_train)
-
-        # print(cur_h_params)
-        # PART: get dev set predictions
-        predicted_dev = clf.predict(x_dev)
-
-        # 2.b compute the accuracy on the validation set
-        cur_metric = metric(y_pred=predicted_dev, y_true=y_dev)
-
-        # 3. identify the combination-of-hyper-parameter for which validation set accuracy is the highest.
-        if cur_metric > best_metric:
-            best_metric = cur_metric
-            best_model = clf
-            best_h_params = cur_h_params
-            print("Found new best metric with :" + str(cur_h_params))
-            print("New best val metric:" + str(cur_metric))
-    return best_model, best_metric, best_h_params
-
-
-def tune_and_save(clf, x_train, y_train, x_dev, y_dev, metric, h_param_comb, model_path):
-    best_model, best_metric, best_h_params = h_param_tuning(
-        h_param_comb, clf, x_train, y_train, x_dev, y_dev, metric
-    )
-
-    # save the best_model
-    best_param_config = "_".join([h + "=" + str(best_h_params[h]) for h in best_h_params])
+    X_test, X_validation, y_test, y_validation = train_test_split(
+        X_test, y_test, test_size=validation_size_from_test_size, shuffle=False)
     
-    if type(clf) == svm.SVC:
-        model_type = 'svm'
-    if type(clf) == tree.DecisionTreeClassifier:
-        model_type = 'tree'
-    best_model_name = model_type + "_" + best_param_config + ".joblib"
-    if model_path == None:
-        model_path = best_model_name
-    dump(best_model, model_path)
+    return X_train, X_test, X_validation, y_train, y_test, y_validation
 
-    print("Best hyperparameters were:")
-    print(best_h_params)
 
-    print("Best Metric on Dev was:{}".format(best_metric))
+#training and saving the model
+def train_and_save_model(classifier, hyperparameter_list, X_train, y_train, X_validation, y_validation):
 
-    return model_path
+    acc_val, f1_validation, model_location, non_skipped_values = [], [], [], []
+
+    for hyperparameter_value in hyperparameter_list: 
+
+        # Create a classifier: a support vector classifier
+        if classifier == 'SVM':
+            clf = svm.SVC()
+            clf.set_params(**hyperparameter_value)
+        # Create a classifier : for the decision tree
+        elif classifier == 'DecisionTree':
+            clf = tree.DecisionTreeClassifier(max_depth = hyperparameter_value)
+
+        # Learn the digits on the train dataset
+        clf.fit(X_train, y_train)
+
+        # Predicting the value of the digits on the test dataset
+        predicted_val = clf.predict(X_validation)
+
+        val_accuracy_score = accuracy_score(y_validation, predicted_val)
+        val_f1_score = f1_score(y_validation, predicted_val, average='weighted')
+
+        if val_accuracy_score < 0.11:
+            #print("Skipping for the hyperparameter value that accuracy is very less", hyperparameter_value)
+            continue
+
+        #Save the model to the mount
+        saved_model = pickle.dumps(clf)
+        model_path = '/Users/harshi/Desktop/IITJ/Sem_4/MLOPS/mlops-22/models'
+        path = model_path + '/' + classifier + '_' + str(hyperparameter_value) + '.pkl' 
+        with open(path, 'wb') as f:
+            pickle.dump(clf, f)
+
+        
+        acc_val.append(val_accuracy_score)
+        f1_validation.append(val_f1_score)
+        model_location.append(path)
+        non_skipped_values.append(hyperparameter_value)
+
+    df = pd.DataFrame(data = {'Hyperparameter - Values ': non_skipped_values ,'Accuracy of Validation Data calculated': acc_val, 'f1 score of Validation Data calculated': f1_validation, 'Model Location stored': model_location})
+
+    return df
+
+# seperate method for returning the model path
+def get_best_model_path(df):
+
+    return df.iloc[df['Accuracy of Validation Data calculated'].argmax()]['Model Location stored']
+
+# seperate method for returning the performance metrics
+def get_best_model_metrics(df):
+
+    return df.iloc[df['Accuracy of Validation Data calculated'].argmax()]['Accuracy of Validation Data calculated'], df.iloc[df['Accuracy of Validation Data calculated'].argmax()]['f1 score of Validation Data calculated']
+
+# Predicting the test data using the best pickle model by selecting the best hyperparameters
+def model_test(model_path, X, y):
+
+    clf = pickle.load(open(model_path, 'rb'))
+
+    predicted_test = clf.predict(X)
+
+    accuracy_test = accuracy_score(y, predicted_test)
+    f1_score_test = f1_score(y, predicted_test, average='weighted')
     
+    return accuracy_test, f1_score_test
+
+
+def print_data_frame (clf_name, df):
+
+    print()
+    print("Metrics calculated for:", clf_name)
+
+def print_metrics(model_accuracy, model_f1_score):
+
+    print()
+    print("Accuracy on the Test Data:", model_accuracy)
+    print("f1 score on the Test Data:", model_f1_score)
+    print("###############################################################################################################")
