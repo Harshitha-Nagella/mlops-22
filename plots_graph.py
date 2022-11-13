@@ -1,115 +1,55 @@
+print(__doc__)
+
 # Author: Gael Varoquaux <gael dot varoquaux at normalesup dot org>
 # License: BSD 3 clause
 
+import sys
+import pandas as pd
+from statistics import mean,pstdev
+from utils import flatten_images, preprocess, create_splits, train_and_save_model, get_best_model_path, model_test, print_data_frame, print_metrics
 
-#PART: library dependencies -- sklear, torch, tensorflow, numpy, transformers
+#Get values from command line
+rescale_factor = 1
+gamma_values = [0.01, 0.005, 0.001, 0.0005]
+c_values = [0.1, 0.2, 0.5, 0.7]
+hyp_comb = [{'gamma':g,"C":c}for g in gamma_values for c in c_values]
+depth_value = [5,10,20,50,100]
+test_size = [0.2,0.25,0.3,0.35,0.4]
+validation_size_from_test_size = [0.5,0.6,0.4,0.7,0.75]
+flattened_images, digits = flatten_images()
+rescaled_images = preprocess(flattened_images, rescale_factor = rescale_factor)
+svm_test_dataset_acc, decision_tree_test_dataset_acc, svm_test_dataset_f1, decision_tree_test_dataset_f1  = [], [], [], []
+for i in range(5):
+    print("Train set size:" ,1-(test_size[i]))
+    print("Test set size :{0:.2f}".format(test_size[i]*(1 - validation_size_from_test_size[i])))
+    print("validation set size : {0:.2f}".format(validation_size_from_test_size[i]*test_size[i]))
 
-# Standard scientific Python imports
-import matplotlib.pyplot as plt
+    X_train, X_test, X_validation, y_train, y_test, y_validation = create_splits(rescaled_images, digits.target, test_size[i], validation_size_from_test_size[i]) # 5 different splits
+    classifiers = {'SVM' : hyp_comb, 'DecisionTree' : depth_value} # two different classifiers
+    for clf_name in classifiers:
+        df = train_and_save_model(clf_name, classifiers[clf_name], X_train, y_train, X_validation, y_validation) # training and saving the model
+        model_path = get_best_model_path(df)  #path for the best model
+        print_data_frame(clf_name, df)
+        accuracy_test, f1_score_test = model_test(model_path, X_test, y_test) # metrics 
+        if clf_name == 'SVM':
+            svm_test_dataset_acc.append(accuracy_test)
+            svm_test_dataset_f1.append(f1_score_test)
+        else:
+            decision_tree_test_dataset_acc.append(accuracy_test)
+            decision_tree_test_dataset_f1.append(f1_score_test)
 
-# Import datasets, classifiers and performance metrics
-from sklearn import datasets, svm, metrics
-from sklearn.model_selection import train_test_split
+        print_metrics(accuracy_test, f1_score_test)
 
-# 1. set the ranges of hyper parameters 
-gamma_list = [0.01, 0.005, 0.001, 0.0005, 0.0001]
-c_list = [0.1, 0.2, 0.5, 0.7, 1, 2, 5, 7, 10] 
+svm_test_dataset_acc.append(mean(svm_test_dataset_acc))
+decision_tree_test_dataset_acc.append(mean(decision_tree_test_dataset_acc))
+svm_test_dataset_f1.append(mean(svm_test_dataset_f1))
+decision_tree_test_dataset_f1.append(mean(decision_tree_test_dataset_f1))
+svm_test_dataset_acc.append(pstdev(svm_test_dataset_acc[:-1]))
+decision_tree_test_dataset_acc.append(pstdev(decision_tree_test_dataset_acc[:-1]))
+svm_test_dataset_f1.append(pstdev(svm_test_dataset_f1[:-1]))
+decision_tree_test_dataset_f1.append(pstdev(decision_tree_test_dataset_f1[:-1]))
 
-h_param_comb = [{'gamma':g, 'C':c} for g in gamma_list for c in c_list]
+df = pd.DataFrame(list(zip(svm_test_dataset_acc, decision_tree_test_dataset_acc, svm_test_dataset_f1, decision_tree_test_dataset_f1)),columns =['SVM Accuracy', 'Decision Tree Accuracy', 'SVM f1 Score', 'Decision Tree f1 Score'], index =['1', '2', '3', '4', '5','Mean','Std'])
+df.index.name = 'Run'
 
-assert len(h_param_comb) == len(gamma_list)*len(c_list)
-
-train_frac = 0.8
-test_frac = 0.1
-dev_frac = 0.1
-
-#PART: load dataset -- data from csv, tsv, jsonl, pickle
-digits = datasets.load_digits()
-
-#PART: sanity check visualization of the data
-_, axes = plt.subplots(nrows=1, ncols=4, figsize=(10, 3))
-for ax, image, label in zip(axes, digits.images, digits.target):
-    ax.set_axis_off()
-    ax.imshow(image, cmap=plt.cm.gray_r, interpolation="nearest")
-    ax.set_title("Training: %i" % label)
-
-
-#PART: data pre-processing -- to remove some noise, to normalize data, format the data to be consumed by mode
-# flatten the images
-n_samples = len(digits.images)
-data = digits.images.reshape((n_samples, -1))
-
-
-#PART: define train/dev/test splits of experiment protocol
-# train to train model
-# dev to set hyperparameters of the model
-# test to evaluate the performance of the model
-dev_test_frac = 1-train_frac
-X_train, X_dev_test, y_train, y_dev_test = train_test_split(
-    data, digits.target, test_size=dev_test_frac, shuffle=True
-)
-X_test, X_dev, y_test, y_dev = train_test_split(
-    X_dev_test, y_dev_test, test_size=(dev_frac)/dev_test_frac, shuffle=True
-)
-
-
-best_acc = -1.0
-best_model = None
-best_h_params = None
-
-# 2. For every combination-of-hyper-parameter values
-for cur_h_params in h_param_comb:
-
-    #PART: Define the model
-    # Create a classifier: a support vector classifier
-    clf = svm.SVC()
-
-    #PART: setting up hyperparameter
-    hyper_params = cur_h_params
-    clf.set_params(**hyper_params)
-
-
-    #PART: Train model
-    # 2.a train the model 
-    # Learn the digits on the train subset
-    clf.fit(X_train, y_train)
-
-    # print(cur_h_params)
-    #PART: get dev set predictions
-    predicted_dev = clf.predict(X_dev)
-
-    # 2.b compute the accuracy on the validation set
-    cur_acc = metrics.accuracy_score(y_pred=predicted_dev, y_true=y_dev)
-
-    # 3. identify the combination-of-hyper-parameter for which validation set accuracy is the highest. 
-    if cur_acc > best_acc:
-        best_acc = cur_acc
-        best_model = clf
-        best_h_params = cur_h_params
-        print("Found new best acc with :"+str(cur_h_params))
-        print("New best val accuracy:" + str(cur_acc))
-
-
-
-    
-#PART: Get test set predictions
-# Predict the value of the digit on the test subset
-predicted = best_model.predict(X_test)
-
-#PART: Sanity check of predictions
-_, axes = plt.subplots(nrows=1, ncols=4, figsize=(10, 3))
-for ax, image, prediction in zip(axes, X_test, predicted):
-    ax.set_axis_off()
-    image = image.reshape(8, 8)
-    ax.imshow(image, cmap=plt.cm.gray_r, interpolation="nearest")
-    ax.set_title(f"Prediction: {prediction}")
-
-# 4. report the test set accurancy with that best model.
-#PART: Compute evaluation metrics
-print(
-    f"Classification report for classifier {clf}:\n"
-    f"{metrics.classification_report(y_test, predicted)}\n"
-)
-
-print("Best hyperparameters were:")
-print(cur_h_params)
+print(df)
